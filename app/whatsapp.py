@@ -19,7 +19,10 @@ import httpx
 
 logger = logging.getLogger("khataai.whatsapp")
 
-GREEN_API_BASE = "https://api.green-api.com"
+GREEN_API_BASE = os.environ.get(
+    "GREEN_API_URL",
+    "https://7107.api.greenapi.com"
+).rstrip("/")
 
 
 def _instance_id() -> str:
@@ -59,10 +62,23 @@ async def send_text(to: str, body: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(url, json=payload)
+            logger.info(
+                "GREEN API SEND: status=%s body=%s",
+                resp.status_code,
+                resp.text,
+            )
             resp.raise_for_status()
             return True
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "GREEN API ERROR: status=%s body=%s",
+            e.response.status_code,
+            e.response.text,
+            exc_info=True,
+        )
+        return False
     except Exception as e:
-        logger.error("send_text failed to %s: %s", to, e)
+        logger.error("send_text failed to %s: %s", to, e, exc_info=True)
         return False
 
 
