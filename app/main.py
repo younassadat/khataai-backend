@@ -58,18 +58,40 @@ async def run_digest(request: Request):
 @app.post("/webhook")
 async def receive_message(request: Request):
     payload = await request.json()
+    print(
+        "WEBHOOK:",
+        payload.get("typeWebhook"),
+        payload.get("messageData", {}).get("typeMessage"),
+        payload.get("senderData", {}).get("chatId"),
+        flush=True,
+    )
 
     # Green API parser — replaces Meta's _extract_message
     message, phone_number = extract_message_green_api(payload)
     if message is None:
         return Response(status_code=200)
 
+    print("PARSED:", message, phone_number, flush=True)
+
     # FIRST CHECK: beta whitelist
     if not is_whitelisted(phone_number):
+        print("NOT WHITELISTED:", phone_number, flush=True)
         await send_text(phone_number, REJECTION_MESSAGE)
         return Response(status_code=200)
 
+    print("WHITELISTED:", phone_number, flush=True)
+
     user, just_created = get_or_create_user(phone_number)
+
+    print(
+        "USER:",
+        user.get("id"),
+        "active=",
+        user.get("is_active"),
+        "just_created=",
+        just_created,
+        flush=True,
+    )
 
     # Onboarding gate — nothing runs until seller opts in
     if not user["is_active"]:
