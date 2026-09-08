@@ -4,7 +4,6 @@ from fastapi import FastAPI, Request, Response
 from dotenv import load_dotenv
 
 from app.whatsapp import send_text, get_media_url, download_media_bytes
-from app.green_api_parser import extract_message_green_api
 from app.gemini_client import extract_receipt, answer_ledger_question
 from app.supabase_client import get_supabase, upload_receipt_image
 from app.handlers.whitelist import is_whitelisted, REJECTION_MESSAGE
@@ -36,7 +35,7 @@ app = FastAPI(title="KhataAI")
 
 @app.get("/")
 def health():
-    return {"status": "ok", "service": "KhataAI", "provider": "green-api"}
+    return {"status": "ok", "service": "KhataAI"}
 
 
 # ---------------------------------------------------------------------------
@@ -45,55 +44,49 @@ def health():
 @app.post("/internal/run-digest")
 async def run_digest(request: Request):
     from app.handlers.digest import run_monthly_digest_for_all_active_users
+
     secret = request.headers.get("x-cron-secret")
     if secret != os.environ.get("CRON_SECRET"):
         return Response(status_code=403)
+
     sent = await run_monthly_digest_for_all_active_users()
     return {"digests_sent": sent}
 
 
 # ---------------------------------------------------------------------------
-# Green API webhook — all incoming messages
+# Phase 1: webhook verification
+# ---------------------------------------------------------------------------
+@app.get("/webhook")
+def verify_webhook(request: Request):
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+
+    expected_token = os.environ["WHATSAPP_VERIFY_TOKEN"]
+    if mode == "subscribe" and token == expected_token:
+        return Response(content=challenge, media_type="text/plain")
+    return Response(status_code=403)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1–5: incoming message handler
 # ---------------------------------------------------------------------------
 @app.post("/webhook")
 async def receive_message(request: Request):
     payload = await request.json()
-    print(
-        "WEBHOOK:",
-        payload.get("typeWebhook"),
-        payload.get("messageData", {}).get("typeMessage"),
-        payload.get("senderData", {}).get("chatId"),
-        flush=True,
-    )
 
-    # Green API parser — replaces Meta's _extract_message
-    message, phone_number = extract_message_green_api(payload)
+    message, phone_number = _extract_message(payload)
     if message is None:
         return Response(status_code=200)
 
-    print("PARSED:", message, phone_number, flush=True)
-
-    # FIRST CHECK: beta whitelist
+    # --- FIRST CHECK: beta whitelist (Phase 1) ---
     if not is_whitelisted(phone_number):
-        print("NOT WHITELISTED:", phone_number, flush=True)
         await send_text(phone_number, REJECTION_MESSAGE)
         return Response(status_code=200)
 
-    print("WHITELISTED:", phone_number, flush=True)
-
     user, just_created = get_or_create_user(phone_number)
 
-    print(
-        "USER:",
-        user.get("id"),
-        "active=",
-        user.get("is_active"),
-        "just_created=",
-        just_created,
-        flush=True,
-    )
-
-    # Onboarding gate — nothing runs until seller opts in
+    # --- Onboarding gate (Phase 5): nothing else runs until opted in ---
     if not user["is_active"]:
         text = message.get("text", {}).get("body", "") if message["type"] == "text" else ""
         if is_opt_in_reply(text):
@@ -105,13 +98,15 @@ async def receive_message(request: Request):
             await send_text(phone_number, ASK_AGAIN_MESSAGE)
         return Response(status_code=200)
 
-    # Rate limit — only for image and audio
+    # --- SECOND CHECK: daily rate limit (Phase 1) ---
+    # Only applied to AI-heavy operations (receipt scan + voice note).
+    # Text queries (earnings, debtors) are cheap and not rate-limited.
     message_type = message["type"]
     if message_type in ("image", "audio") and not is_within_daily_limit(user["id"]):
         await send_text(phone_number, LIMIT_REACHED_MESSAGE)
         return Response(status_code=200)
 
-    # Intent routing
+    # --- Intent routing (Phase 3) ---
     text_body = message.get("text", {}).get("body") if message_type == "text" else None
     intent = classify(message_type, text_body)
 
@@ -141,14 +136,17 @@ async def receive_message(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Image handler
+# Phase 2: receipt image handler
 # ---------------------------------------------------------------------------
 async def _handle_image_message(message: dict, phone_number: str, user_id: str) -> None:
-    # In Green API, image id IS the download URL already
-    media_url = message["image"]["id"]
+    media_id = message["image"]["id"]
     caption = message["image"].get("caption")
+    await send_text(phone_number, "Received! Processing...")
 
-    await send_text(phone_number, "Receipt mil gayi! Abhi read kar raha hoon...")
+    media_url = await get_media_url(media_id)
+    if media_url is None:
+        await send_text(phone_number, FAILED_OCR_MESSAGE)
+        return
 
     image_bytes = await download_media_bytes(media_url)
     if image_bytes is None:
@@ -160,8 +158,7 @@ async def _handle_image_message(message: dict, phone_number: str, user_id: str) 
         await send_text(phone_number, FAILED_OCR_MESSAGE)
         return
 
-    import hashlib
-    filename = hashlib.md5(media_url.encode()).hexdigest() + ".jpg"
+    filename = f"{media_id}.jpg"
     stored_url = upload_receipt_image(user_id, filename, image_bytes, "image/jpeg")
     image_url = stored_url or media_url
 
@@ -173,23 +170,34 @@ async def _handle_image_message(message: dict, phone_number: str, user_id: str) 
         raw_text=str(extracted),
         is_paid=is_paid,
     )
+    # Increment rate limit counter after successful processing
     increment_daily_count(user_id)
     await send_text(phone_number, confirmation_message(entry))
 
 
 # ---------------------------------------------------------------------------
-# Voice note handler
+# Phase 3: voice note handler
 # ---------------------------------------------------------------------------
 async def _handle_voice_message(message: dict, phone_number: str, user_id: str) -> None:
-    # In Green API, audio id IS the download URL already
-    media_url = message["audio"]["id"]
+    """
+    Downloads the voice note from Meta CDN, sends to Gemini for
+    transcription + intent classification, then routes to the appropriate
+    handler — same handlers used for text and image messages.
+    """
+    media_id = message["audio"]["id"]
     await send_text(phone_number, "Voice note sun raha hoon...")
+
+    media_url = await get_media_url(media_id)
+    if media_url is None:
+        await send_text(phone_number, VOICE_FAILED_MESSAGE)
+        return
 
     audio_bytes = await download_media_bytes(media_url)
     if audio_bytes is None:
         await send_text(phone_number, VOICE_FAILED_MESSAGE)
         return
 
+    # WhatsApp voice notes are OGG/Opus. Gemini 1.5 Flash supports this natively.
     result = transcribe_and_classify_voice(audio_bytes, mime_type="audio/ogg")
     if result is None:
         await send_text(phone_number, VOICE_FAILED_MESSAGE)
@@ -203,16 +211,18 @@ async def _handle_voice_message(message: dict, phone_number: str, user_id: str) 
             await send_text(phone_number, VOICE_FAILED_MESSAGE)
             return
 
+        # Build an extracted dict matching what extract_receipt() returns
         extracted = {
             "date": receipt.get("date"),
             "amount": receipt["amount"],
             "vendor": receipt.get("vendor") or "Unknown",
             "type": receipt.get("type", "income"),
         }
+
+        # Treat "is_udhaar" from voice classification as the unpaid flag
         is_paid = not receipt.get("is_udhaar", False)
 
-        import hashlib
-        filename = hashlib.md5(media_url.encode()).hexdigest() + ".ogg"
+        filename = f"{media_id}.ogg"
         stored_url = upload_receipt_image(user_id, filename, audio_bytes, "audio/ogg")
         audio_url = stored_url or media_url
 
@@ -241,3 +251,21 @@ async def _handle_voice_message(message: dict, phone_number: str, user_id: str) 
 
     else:
         await send_text(phone_number, UNKNOWN_FALLBACK)
+
+
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
+def _extract_message(payload: dict):
+    """Pulls the first inbound message + sender number out of a WhatsApp
+    webhook payload, or (None, None) if this payload has no message."""
+    try:
+        value = payload["entry"][0]["changes"][0]["value"]
+        messages = value.get("messages")
+        if not messages:
+            return None, None
+        message = messages[0]
+        phone_number = message["from"]
+        return message, phone_number
+    except (KeyError, IndexError):
+        return None, None
