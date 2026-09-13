@@ -34,8 +34,10 @@ VOICE_PROMPT = (
     '{"intent": "RECEIPT|EARNINGS_QUERY|DEBTOR_QUERY|UNKNOWN", '
     '"transcription": "string", '
     '"receipt": {"amount": number, "vendor": "string", "type": "income|expense", '
-    '"date": "YYYY-MM-DD or null", "is_udhaar": false}}'
-    "\n\nFor non-RECEIPT intents, set receipt to null."
+    '"date": "YYYY-MM-DD or null", "is_udhaar": false, "debtor_name": "string or null"}}'
+    "\n\nFor non-RECEIPT intents, set receipt to null. If is_udhaar is true and "
+    "the seller names the customer who owes the money, put that name in "
+    "debtor_name, otherwise leave it null."
 )
 
 VOICE_FAILED_MESSAGE = (
