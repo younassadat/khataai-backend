@@ -17,7 +17,7 @@ async def send_digest_for_user(user_id: str, phone_number: str) -> None:
     debtors = get_unpaid_debtors(user_id)
 
     if debtors:
-        names = ", ".join(f"{d['vendor']} (Rs. {d['amount']})" for d in debtors)
+        names = ", ".join(f"{d.get('debtor_name') or d['vendor']} (Rs. {d['amount']})" for d in debtors)
         debtor_line = f" Hisaab mein {len(debtors)} log hain: {names}."
     else:
         debtor_line = " Hisaab mein koi nahi hai."
