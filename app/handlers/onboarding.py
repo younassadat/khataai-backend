@@ -13,6 +13,14 @@ ASK_AGAIN_MESSAGE = (
     "data process nahi karte."
 )
 
+ASK_BUSINESS_NAME = "Aapki dukaan ya business ka naam kya hai?"
+
+ASK_BUSINESS_TYPE = (
+    "Aapka business kis type ka hai? (e.g. Kirana Store, Tailor, Mobile Shop, Salon)"
+)
+
+ONBOARDING_COMPLETE_MESSAGE = "Shukriya! Ab aap receipts bhej sakte hain."
+
 OPT_IN_KEYWORDS = {"haa", "haan", "yes", "ha"}
 
 
@@ -27,13 +35,35 @@ def get_or_create_user(phone_number: str) -> tuple[dict, bool]:
 
     created = (
         supabase.table("users")
-        .insert({"phone_number": phone_number, "is_active": False})
+        .insert({"phone_number": phone_number, "is_active": False, "onboarding_step": "awaiting_optin"})
         .execute()
     )
     return created.data[0], True
 
 
+def advance_to_business_name(phone_number: str) -> None:
+    supabase = get_supabase()
+    supabase.table("users").update(
+        {"onboarding_step": "awaiting_business_name"}
+    ).eq("phone_number", phone_number).execute()
+
+
+def save_business_name(phone_number: str, name: str) -> None:
+    supabase = get_supabase()
+    supabase.table("users").update(
+        {"business_name": name.strip(), "onboarding_step": "awaiting_business_type"}
+    ).eq("phone_number", phone_number).execute()
+
+
+def save_business_type(phone_number: str, biz_type: str) -> None:
+    supabase = get_supabase()
+    supabase.table("users").update(
+        {"business_type": biz_type.strip(), "onboarding_step": "done", "is_active": True}
+    ).eq("phone_number", phone_number).execute()
+
+
 def activate_user(phone_number: str) -> None:
+    """Kept for backward compatibility — direct activation with no business info."""
     supabase = get_supabase()
     supabase.table("users").update({"is_active": True}).eq(
         "phone_number", phone_number
