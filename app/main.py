@@ -65,16 +65,20 @@ def verify_webhook(request: Request):
 @app.post("/webhook")
 async def receive_message(request: Request):
     payload = await request.json()
+    print(f"DEBUG RAW PAYLOAD: {payload}", flush=True)
 
     message, phone_number = _extract_message(payload)
+    print(f"DEBUG extracted message={message}, phone={phone_number}", flush=True)
     if message is None:
         return Response(status_code=200)
 
     if not is_whitelisted(phone_number):
+        print(f"DEBUG: {phone_number} not whitelisted", flush=True)
         await send_text(phone_number, REJECTION_MESSAGE)
         return Response(status_code=200)
 
     user, just_created = get_or_create_user(phone_number)
+    print(f"DEBUG: user={user}, just_created={just_created}", flush=True)
 
     if not user["is_active"]:
         text = message.get("text", {}).get("body", "") if message["type"] == "text" else ""
@@ -235,9 +239,11 @@ def _extract_message(payload: dict):
         value    = payload["entry"][0]["changes"][0]["value"]
         messages = value.get("messages")
         if not messages:
+            print(f"DEBUG _extract_message: no 'messages' key, value={value}", flush=True)
             return None, None
         message      = messages[0]
         phone_number = "+" + message["from"]
         return message, phone_number
-    except (KeyError, IndexError):
+    except (KeyError, IndexError) as e:
+        print(f"DEBUG _extract_message EXCEPTION: {e}, payload={payload}", flush=True)
         return None, None
