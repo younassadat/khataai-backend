@@ -80,3 +80,32 @@ def format_debtor_list(rows: list[dict]) -> str:
         return "Abhi koi hisaab mein nahi hai. Sab clear hai! ✓"
     lines = [f"- {r.get('debtor_name') or r['vendor']}: Rs. {r['amount']}" for r in rows]
     return "Hisaab mein yeh log hain:\n" + "\n".join(lines)
+
+
+def mark_debtor_paid(user_id: str, name: str) -> bool:
+    """Marks the most specific matching unpaid entry as paid. Tries debtor_name
+    first (the real customer name), falls back to vendor for older entries
+    saved before debtor_name existed. Returns True if anything was updated."""
+    supabase = get_supabase()
+    pattern = f"%{name.strip()}%"
+
+    result = (
+        supabase.table("ledger_entries")
+        .update({"is_paid": True})
+        .eq("user_id", user_id)
+        .eq("is_paid", False)
+        .ilike("debtor_name", pattern)
+        .execute()
+    )
+    if result.data:
+        return True
+
+    result = (
+        supabase.table("ledger_entries")
+        .update({"is_paid": True})
+        .eq("user_id", user_id)
+        .eq("is_paid", False)
+        .ilike("vendor", pattern)
+        .execute()
+    )
+    return bool(result.data)
