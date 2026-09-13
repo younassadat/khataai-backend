@@ -24,8 +24,6 @@ from app.handlers.intent import classify, Intent, UNKNOWN_FALLBACK
 from app.handlers.ledger import (
     save_ledger_entry,
     confirmation_message,
-    determine_is_paid,
-    extract_debtor_name,
     get_month_totals,
     get_unpaid_debtors,
     format_debtor_list,
@@ -142,7 +140,7 @@ async def _handle_image_message(message: dict, phone_number: str, user_id: str) 
         await send_text(phone_number, FAILED_OCR_MESSAGE)
         return
 
-    extracted = extract_receipt(image_bytes)
+    extracted = extract_receipt(image_bytes, caption=caption)
     if not extracted:
         await send_text(phone_number, FAILED_OCR_MESSAGE)
         return
@@ -151,8 +149,8 @@ async def _handle_image_message(message: dict, phone_number: str, user_id: str) 
     stored    = upload_receipt_image(user_id, filename, image_bytes, "image/jpeg")
     image_url = stored or media_url
 
-    is_paid     = determine_is_paid(caption)
-    debtor_name = extract_debtor_name(caption) if not is_paid else None
+    is_paid     = not extracted.get("is_udhaar", False)
+    debtor_name = extracted.get("debtor_name") if not is_paid else None
     entry       = save_ledger_entry(
         user_id=user_id,
         extracted=extracted,
@@ -198,6 +196,7 @@ async def _handle_voice_message(message: dict, phone_number: str, user_id: str) 
             "type":   receipt.get("type", "income"),
         }
         is_paid  = not receipt.get("is_udhaar", False)
+        debtor_name = receipt.get("debtor_name") if not is_paid else None
         filename = f"{media_id}.ogg"
         stored   = upload_receipt_image(user_id, filename, audio_bytes, "audio/ogg")
         entry    = save_ledger_entry(
@@ -206,6 +205,7 @@ async def _handle_voice_message(message: dict, phone_number: str, user_id: str) 
             image_url=stored or media_url,
             raw_text=result.get("transcription", ""),
             is_paid=is_paid,
+            debtor_name=debtor_name,
         )
         increment_daily_count(user_id)
         await send_text(phone_number, confirmation_message(entry))
