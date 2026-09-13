@@ -20,7 +20,26 @@ def determine_is_paid(caption: str | None) -> bool:
     return not any(kw in lowered for kw in UNPAID_KEYWORDS)
 
 
-def save_ledger_entry(user_id: str, extracted: dict, image_url: str, raw_text: str, is_paid: bool = True) -> dict:
+def extract_debtor_name(caption: str | None) -> str | None:
+    """'udhaar Ahmed Bhai' -> 'Ahmed Bhai'. Returns None if no name was given."""
+    if not caption:
+        return None
+    lowered = caption.strip().lower()
+    for kw in UNPAID_KEYWORDS:
+        if lowered.startswith(kw):
+            rest = caption.strip()[len(kw):].strip(" -:")
+            return rest or None
+    return None
+
+
+def save_ledger_entry(
+    user_id: str,
+    extracted: dict,
+    image_url: str,
+    raw_text: str,
+    is_paid: bool = True,
+    debtor_name: str | None = None,
+) -> dict:
     supabase = get_supabase()
     row = {
         "user_id": user_id,
@@ -31,6 +50,7 @@ def save_ledger_entry(user_id: str, extracted: dict, image_url: str, raw_text: s
         "image_url": image_url,
         "raw_text": raw_text,
         "is_paid": is_paid,
+        "debtor_name": debtor_name,
     }
     result = supabase.table("ledger_entries").insert(row).execute()
     return result.data[0]
@@ -66,7 +86,7 @@ def get_unpaid_debtors(user_id: str) -> list[dict]:
     supabase = get_supabase()
     rows = (
         supabase.table("ledger_entries")
-        .select("vendor, amount")
+        .select("vendor, amount, debtor_name")
         .eq("user_id", user_id)
         .eq("is_paid", False)
         .execute()
@@ -78,5 +98,5 @@ def get_unpaid_debtors(user_id: str) -> list[dict]:
 def format_debtor_list(rows: list[dict]) -> str:
     if not rows:
         return "Abhi koi hisaab mein nahi hai. Sab clear hai! ✓"
-    lines = [f"- {r['vendor']}: Rs. {r['amount']}" for r in rows]
+    lines = [f"- {r.get('debtor_name') or r['vendor']}: Rs. {r['amount']}" for r in rows]
     return "Hisaab mein yeh log hain:\n" + "\n".join(lines)
