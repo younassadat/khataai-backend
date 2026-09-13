@@ -98,12 +98,14 @@ async def receive_message(request: Request):
         return Response(status_code=200)
 
     message_type = message["type"]
+    print(f"DEBUG: reached message_type={message_type}, phone={phone_number}", flush=True)
     if message_type in ("image", "audio") and not is_within_daily_limit(user["id"]):
         await send_text(phone_number, LIMIT_REACHED_MESSAGE)
         return Response(status_code=200)
 
     text_body = message.get("text", {}).get("body") if message_type == "text" else None
     intent    = classify(message_type, text_body)
+    print(f"DEBUG: classified intent={intent}", flush=True)
 
     if intent == Intent.IMAGE:
         await _handle_image_message(message, phone_number, user["id"])
@@ -120,7 +122,8 @@ async def receive_message(request: Request):
         reply = answer_ledger_question(text_body, income, expense, now.strftime("%B"))
         await send_text(phone_number, reply)
     else:
-        await send_text(phone_number, UNKNOWN_FALLBACK)
+        result = await send_text(phone_number, UNKNOWN_FALLBACK)
+        print(f"DEBUG: fallback send_text result={result}", flush=True)
 
     return Response(status_code=200)
 
