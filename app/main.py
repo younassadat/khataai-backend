@@ -14,6 +14,7 @@ from app.handlers.onboarding import (
     advance_to_business_name,
     save_business_name,
     save_business_type,
+    activate_user,
     WELCOME_MESSAGE,
     ASK_AGAIN_MESSAGE,
     ASK_BUSINESS_NAME,
@@ -65,20 +66,16 @@ def verify_webhook(request: Request):
 @app.post("/webhook")
 async def receive_message(request: Request):
     payload = await request.json()
-    print(f"DEBUG RAW PAYLOAD: {payload}", flush=True)
 
     message, phone_number = _extract_message(payload)
-    print(f"DEBUG extracted message={message}, phone={phone_number}", flush=True)
     if message is None:
         return Response(status_code=200)
 
     if not is_whitelisted(phone_number):
-        print(f"DEBUG: {phone_number} not whitelisted", flush=True)
         await send_text(phone_number, REJECTION_MESSAGE)
         return Response(status_code=200)
 
     user, just_created = get_or_create_user(phone_number)
-    print(f"DEBUG: user={user}, just_created={just_created}", flush=True)
 
     if not user["is_active"]:
         text = message.get("text", {}).get("body", "") if message["type"] == "text" else ""
@@ -98,18 +95,22 @@ async def receive_message(request: Request):
         elif step == "awaiting_business_type":
             save_business_type(phone_number, text)
             await send_text(phone_number, ONBOARDING_COMPLETE_MESSAGE)
+        else:
+            # Unexpected state (e.g. onboarding_step says 'done' but is_active
+            # is still False, usually from a manual DB edit) — self-heal
+            # instead of silently dropping the message.
+            activate_user(phone_number)
+            await send_text(phone_number, ONBOARDING_COMPLETE_MESSAGE)
 
         return Response(status_code=200)
 
     message_type = message["type"]
-    print(f"DEBUG: reached message_type={message_type}, phone={phone_number}", flush=True)
     if message_type in ("image", "audio") and not is_within_daily_limit(user["id"]):
         await send_text(phone_number, LIMIT_REACHED_MESSAGE)
         return Response(status_code=200)
 
     text_body = message.get("text", {}).get("body") if message_type == "text" else None
     intent    = classify(message_type, text_body)
-    print(f"DEBUG: classified intent={intent}", flush=True)
 
     if intent == Intent.IMAGE:
         await _handle_image_message(message, phone_number, user["id"])
@@ -126,8 +127,7 @@ async def receive_message(request: Request):
         reply = answer_ledger_question(text_body, income, expense, now.strftime("%B"))
         await send_text(phone_number, reply)
     else:
-        result = await send_text(phone_number, UNKNOWN_FALLBACK)
-        print(f"DEBUG: fallback send_text result={result}", flush=True)
+        await send_text(phone_number, UNKNOWN_FALLBACK)
 
     return Response(status_code=200)
 
@@ -239,11 +239,9 @@ def _extract_message(payload: dict):
         value    = payload["entry"][0]["changes"][0]["value"]
         messages = value.get("messages")
         if not messages:
-            print(f"DEBUG _extract_message: no 'messages' key, value={value}", flush=True)
             return None, None
         message      = messages[0]
         phone_number = "+" + message["from"]
         return message, phone_number
-    except (KeyError, IndexError) as e:
-        print(f"DEBUG _extract_message EXCEPTION: {e}, payload={payload}", flush=True)
+    except (KeyError, IndexError):
         return None, None
