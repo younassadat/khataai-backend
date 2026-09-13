@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request, Response
 from dotenv import load_dotenv
 
 from app.whatsapp import send_text, get_media_url, download_media_bytes
-from app.gemini_client import extract_receipt, answer_ledger_question
+from app.gemini_client import extract_receipt, answer_ledger_question, classify_conversational
 from app.supabase_client import get_supabase, upload_receipt_image
 from app.handlers.whitelist import is_whitelisted, REJECTION_MESSAGE
 from app.handlers.rate_limit import is_within_daily_limit, increment_daily_count, LIMIT_REACHED_MESSAGE
@@ -28,6 +28,7 @@ from app.handlers.ledger import (
     get_month_totals,
     get_unpaid_debtors,
     format_debtor_list,
+    mark_debtor_paid,
     FAILED_OCR_MESSAGE,
 )
 from app.handlers.voice import transcribe_and_classify_voice, VOICE_FAILED_MESSAGE
@@ -127,7 +128,17 @@ async def receive_message(request: Request):
         reply = answer_ledger_question(text_body, income, expense, now.strftime("%B"))
         await send_text(phone_number, reply)
     else:
-        await send_text(phone_number, UNKNOWN_FALLBACK)
+        result = classify_conversational(text_body or "")
+        if result["intent"] == "MARK_PAID" and result.get("debtor_name"):
+            cleared = mark_debtor_paid(user["id"], result["debtor_name"])
+            if cleared:
+                await send_text(phone_number, f"{result['debtor_name']} ka hisaab clear kar diya ✓")
+            else:
+                await send_text(phone_number, f"{result['debtor_name']} ka koi udhaar hisaab nahi mila.")
+        elif result.get("reply"):
+            await send_text(phone_number, result["reply"])
+        else:
+            await send_text(phone_number, UNKNOWN_FALLBACK)
 
     return Response(status_code=200)
 
@@ -231,7 +242,18 @@ async def _handle_voice_message(message: dict, phone_number: str, user_id: str) 
         await send_text(phone_number, format_debtor_list(debtors))
 
     else:
-        await send_text(phone_number, UNKNOWN_FALLBACK)
+        transcript = result.get("transcription", "")
+        convo = classify_conversational(transcript)
+        if convo["intent"] == "MARK_PAID" and convo.get("debtor_name"):
+            cleared = mark_debtor_paid(user_id, convo["debtor_name"])
+            if cleared:
+                await send_text(phone_number, f"{convo['debtor_name']} ka hisaab clear kar diya ✓")
+            else:
+                await send_text(phone_number, f"{convo['debtor_name']} ka koi udhaar hisaab nahi mila.")
+        elif convo.get("reply"):
+            await send_text(phone_number, convo["reply"])
+        else:
+            await send_text(phone_number, UNKNOWN_FALLBACK)
 
 
 def _extract_message(payload: dict):
