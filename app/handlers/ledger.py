@@ -5,31 +5,11 @@ FAILED_OCR_MESSAGE = (
     "Maafi chahta hoon, yeh receipt samajh nahi aaya. Kya aap dobara bhej sakte hain?"
 )
 
-# Decision: the guide doesn't specify how a receipt gets flagged as unpaid,
-# so the rule is a caption keyword — the seller types "udhaar" (or similar)
-# in the WhatsApp image caption when forwarding a receipt for an unpaid
-# invoice. Everything else defaults to paid. Simple, matches the guide's
-# "no complex NLP" philosophy, and the seller controls it directly.
-UNPAID_KEYWORDS = ["udhaar", "baqaya", "unpaid", "credit pe"]
-
-
-def determine_is_paid(caption: str | None) -> bool:
-    if not caption:
-        return True
-    lowered = caption.strip().lower()
-    return not any(kw in lowered for kw in UNPAID_KEYWORDS)
-
-
-def extract_debtor_name(caption: str | None) -> str | None:
-    """'udhaar Ahmed Bhai' -> 'Ahmed Bhai'. Returns None if no name was given."""
-    if not caption:
-        return None
-    lowered = caption.strip().lower()
-    for kw in UNPAID_KEYWORDS:
-        if lowered.startswith(kw):
-            rest = caption.strip()[len(kw):].strip(" -:")
-            return rest or None
-    return None
+# Decision (v2): a Pakistani shopkeeper who doesn't know "trigger words" will
+# just describe the sale naturally — "ye udhaar hai Ahmed Bhai ka", "abhi paise
+# nahi diye", etc. Gemini reads the caption alongside the receipt image (see
+# gemini_client.extract_receipt) and returns is_udhaar + debtor_name directly,
+# using real language understanding instead of keyword matching.
 
 
 def save_ledger_entry(
