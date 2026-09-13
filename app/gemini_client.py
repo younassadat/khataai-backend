@@ -97,3 +97,54 @@ def answer_ledger_question(question: str, income: float, expense: float, month: 
         f"Net:     Rs. {net:,.0f}\n\n"
         f"{closing}"
     )
+
+
+CONVERSATIONAL_PROMPT_TEMPLATE = (
+    "You are KhataAI, a WhatsApp bookkeeping assistant for small Pakistani "
+    "shopkeepers and social-media sellers. It replies briefly in casual Roman "
+    "Urdu (mixed with a little English), the way the seller itself writes.\n\n"
+    "The seller just sent this message. It is NOT a receipt, and it didn't "
+    "match a request for earnings, the debtor list, or the monthly digest "
+    "(those are already handled separately, so don't worry about them):\n"
+    "\"{text}\"\n\n"
+    "Return JSON only, no explanation, no markdown fences. Format:\n"
+    '{{"intent": "MARK_PAID|GREETING|THANKS|HELP|CHITCHAT|UNCLEAR", '
+    '"debtor_name": "string or null", "reply": "string or null"}}\n\n'
+    "MARK_PAID — the seller is saying a specific customer or store has now "
+    "paid off their udhaar (credit), e.g. 'Ahmed Bhai ne paisay de diye', "
+    "'ABC store ka hisaab clear kar do', 'Ahmed ne udhaar chuka diya', "
+    "'usne payment kar di'. Put the customer/store name in debtor_name. "
+    "Leave reply as null for this one.\n"
+    "GREETING — hi / hello / salam / assalamualaikum and similar.\n"
+    "THANKS — shukriya / thanks / thank you and similar.\n"
+    "HELP — asking what KhataAI does, how to use it, or what it can do.\n"
+    "CHITCHAT — small talk or a general question unrelated to bookkeeping.\n"
+    "UNCLEAR — anything else that doesn't fit any of the above.\n\n"
+    "For GREETING, THANKS, HELP, CHITCHAT, and UNCLEAR: write a short (1-2 "
+    "sentence) natural reply in casual Roman Urdu in the 'reply' field, "
+    "matching KhataAI's warm, simple voice. For HELP specifically, briefly "
+    "mention: seller can send a receipt photo or voice note to log a sale or "
+    "purchase, just mention naturally if it's udhaar (credit) and who owes, "
+    "ask 'kitna kamaya' for earnings, ask 'kaun hisaab mein hai' for the "
+    "debtor list, or say 'digest' for a monthly summary. Leave debtor_name "
+    "null for all of these."
+)
+
+
+def classify_conversational(text: str) -> dict:
+    """Fallback for anything that isn't a receipt or a cheap-keyword match
+    (digest/debtor/earnings). Covers everyday chat naturally instead of
+    needing an ever-growing hardcoded phrase list."""
+    fallback = {"intent": "UNCLEAR", "debtor_name": None, "reply": None}
+    try:
+        client = _get_client()
+        prompt = CONVERSATIONAL_PROMPT_TEMPLATE.format(text=text)
+        response = client.models.generate_content(model=_model_name(), contents=[prompt])
+        raw = response.text.strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`").replace("json\n", "", 1).replace("json", "", 1).strip()
+        data = json.loads(raw)
+        return {**fallback, **data}
+    except Exception as e:
+        logger.error("Gemini conversational classification failed: %s", e)
+        return fallback
