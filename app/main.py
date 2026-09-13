@@ -10,16 +10,22 @@ from app.handlers.whitelist import is_whitelisted, REJECTION_MESSAGE
 from app.handlers.rate_limit import is_within_daily_limit, increment_daily_count, LIMIT_REACHED_MESSAGE
 from app.handlers.onboarding import (
     get_or_create_user,
-    activate_user,
     is_opt_in_reply,
+    advance_to_business_name,
+    save_business_name,
+    save_business_type,
     WELCOME_MESSAGE,
     ASK_AGAIN_MESSAGE,
+    ASK_BUSINESS_NAME,
+    ASK_BUSINESS_TYPE,
+    ONBOARDING_COMPLETE_MESSAGE,
 )
 from app.handlers.intent import classify, Intent, UNKNOWN_FALLBACK
 from app.handlers.ledger import (
     save_ledger_entry,
     confirmation_message,
     determine_is_paid,
+    extract_debtor_name,
     get_month_totals,
     get_unpaid_debtors,
     format_debtor_list,
@@ -74,13 +80,23 @@ async def receive_message(request: Request):
 
     if not user["is_active"]:
         text = message.get("text", {}).get("body", "") if message["type"] == "text" else ""
-        if is_opt_in_reply(text):
-            activate_user(phone_number)
-            await send_text(phone_number, "Shukriya! Ab aap receipts bhej sakte hain.")
-        elif just_created:
-            await send_text(phone_number, WELCOME_MESSAGE)
-        else:
-            await send_text(phone_number, ASK_AGAIN_MESSAGE)
+        step = user.get("onboarding_step") or "awaiting_optin"
+
+        if step == "awaiting_optin":
+            if is_opt_in_reply(text):
+                advance_to_business_name(phone_number)
+                await send_text(phone_number, ASK_BUSINESS_NAME)
+            elif just_created:
+                await send_text(phone_number, WELCOME_MESSAGE)
+            else:
+                await send_text(phone_number, ASK_AGAIN_MESSAGE)
+        elif step == "awaiting_business_name":
+            save_business_name(phone_number, text)
+            await send_text(phone_number, ASK_BUSINESS_TYPE)
+        elif step == "awaiting_business_type":
+            save_business_type(phone_number, text)
+            await send_text(phone_number, ONBOARDING_COMPLETE_MESSAGE)
+
         return Response(status_code=200)
 
     message_type = message["type"]
@@ -135,13 +151,15 @@ async def _handle_image_message(message: dict, phone_number: str, user_id: str) 
     stored    = upload_receipt_image(user_id, filename, image_bytes, "image/jpeg")
     image_url = stored or media_url
 
-    is_paid = determine_is_paid(caption)
-    entry   = save_ledger_entry(
+    is_paid     = determine_is_paid(caption)
+    debtor_name = extract_debtor_name(caption) if not is_paid else None
+    entry       = save_ledger_entry(
         user_id=user_id,
         extracted=extracted,
         image_url=image_url,
         raw_text=str(extracted),
         is_paid=is_paid,
+        debtor_name=debtor_name,
     )
     increment_daily_count(user_id)
     await send_text(phone_number, confirmation_message(entry))
