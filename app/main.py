@@ -106,6 +106,9 @@ async def receive_message(request: Request):
         return Response(status_code=200)
 
     message_type = message["type"]
+    if message_type in ("reaction", "sticker", "location", "contacts", "system"):
+        return Response(status_code=200)
+
     if message_type in ("image", "audio") and not is_within_daily_limit(user["id"]):
         await send_text(phone_number, LIMIT_REACHED_MESSAGE)
         return Response(status_code=200)
@@ -135,6 +138,14 @@ async def receive_message(request: Request):
                 await send_text(phone_number, f"{result['debtor_name']} ka hisaab clear kar diya ✓")
             else:
                 await send_text(phone_number, f"{result['debtor_name']} ka koi udhaar hisaab nahi mila.")
+        elif result["intent"] == "DEBTOR_QUERY":
+            debtors = get_unpaid_debtors(user["id"])
+            await send_text(phone_number, format_debtor_list(debtors))
+        elif result["intent"] == "EARNINGS_QUERY":
+            now = datetime.utcnow()
+            income, expense = get_month_totals(user["id"], now.year, now.month)
+            reply = answer_ledger_question(text_body or "", income, expense, now.strftime("%B"))
+            await send_text(phone_number, reply)
         elif result.get("reply"):
             await send_text(phone_number, result["reply"])
         else:
@@ -250,6 +261,14 @@ async def _handle_voice_message(message: dict, phone_number: str, user_id: str) 
                 await send_text(phone_number, f"{convo['debtor_name']} ka hisaab clear kar diya ✓")
             else:
                 await send_text(phone_number, f"{convo['debtor_name']} ka koi udhaar hisaab nahi mila.")
+        elif convo["intent"] == "DEBTOR_QUERY":
+            debtors = get_unpaid_debtors(user_id)
+            await send_text(phone_number, format_debtor_list(debtors))
+        elif convo["intent"] == "EARNINGS_QUERY":
+            now = datetime.utcnow()
+            income, expense = get_month_totals(user_id, now.year, now.month)
+            reply = answer_ledger_question(transcript or "is mahine kitna kamaya?", income, expense, now.strftime("%B"))
+            await send_text(phone_number, reply)
         elif convo.get("reply"):
             await send_text(phone_number, convo["reply"])
         else:
